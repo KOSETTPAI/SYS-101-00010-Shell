@@ -6,12 +6,19 @@ use std::{env, fs::OpenOptions};
 
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{dup2, execvp, fork, pipe, ForkResult, Pid};
+use anyhow; // for anyhow::Result signatures
 
 #[derive(Debug, Clone)]
 struct Stage {
     argv: Vec<String>,
     input: Option<PathBuf>,
     output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Continue,
+    Eof,
 }
 
 fn print_prompt() {
@@ -273,4 +280,65 @@ fn main() {
             }
         }
     }
+}
+
+fn process_next_line() -> anyhow::Result<Status> {
+    let line_opt = read_line()?;
+    let Some(line) = line_opt else { return Ok(Status::Eof) };
+    if line.trim().is_empty() { return Ok(Status::Continue); }
+
+    match run_builtin(&line) {
+        Ok(true) => return Ok(Status::Continue),
+        Ok(false) => {},
+        Err(e) => { eprintln!("{}", e); return Ok(Status::Continue); }
+    }
+
+    match parse_command_line(&line) {
+        Ok((stages, background)) => {
+            if let Err(e) = spawn_pipeline(stages, background) {
+                eprintln!("{}", e);
+            }
+        }
+        Err(e) if e == "empty" => {}
+        Err(e) => {
+            eprintln!("{}", e);
+        }
+    }
+
+    Ok(Status::Continue)
+}
+
+fn run_command(command: &str) -> anyhow::Result<()> {
+    if command.trim().is_empty() { return Ok(()); }
+
+    match run_builtin(command) {
+        Ok(true) => return Ok(()),
+        Ok(false) => {},
+        Err(e) => { eprintln!("{}", e); return Ok(()); }
+    }
+
+    match parse_command_line(command) {
+        Ok((stages, background)) => {
+            if let Err(e) = spawn_pipeline(stages, background) {
+                eprintln!("{}", e);
+            }
+        }
+        Err(e) if e == "empty" => {}
+        Err(e) => {
+            eprintln!("{}", e);
+        }
+    }
+
+    Ok(())
+}
+
+fn externalize(command: &str) -> Vec<CString> {
+    let parts: Vec<String> = command
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    parts
+        .iter()
+        .filter_map(|s| CString::new(s.as_str()).ok())
+        .collect()
 }
